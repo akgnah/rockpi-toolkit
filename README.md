@@ -70,4 +70,4 @@ Do you want to continue? [Y/n]
 
 1. If you want to use dd to restore your image, and your uSD or eMMC has GPT partitions and is mounted, please umount before dd.
 
-2. If you are using debian, want to backup and restore from uSD to eMMC, or from eMMC to uSD, you need to edit the boot line in /etc/fstab, mmcblk0 for uSD and mmcblk1 for eMMC.
+2. If you are using ubuntu, want to backup and restore from uSD to eMMC, or from eMMC to uSD, you need to edit the boot line in /etc/fstab, mmcblk0 for uSD and mmcblk1 for eMMC.
