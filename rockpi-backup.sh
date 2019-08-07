@@ -7,8 +7,7 @@ ROOTFS_PATH=/tmp/rootfs.img
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
 
-if [ `id -u` != 0 ]
-then
+if [ `id -u` != 0 ]; then
     echo -e "${SCRIPT_NAME} needs to be run as root.\n"
     exit 1
 fi
@@ -41,8 +40,7 @@ packages="rsync parted gdisk 96boards-tools-common"
 need_packages=""
 
 idx=1
-for cmd in $commands
-do
+for cmd in $commands; do
   if ! command -v $cmd > /dev/null; then
     pkg=$(echo "$packages" | cut -d " " -f $idx)
     printf "%-30s %s\n" "Command not found: $cmd", "package required: $pkg"
