@@ -20,9 +20,10 @@ Run ./rockpi-backup.sh -h to print usage.
 ```bash
 linaro@rockpi:~ $ sudo ./rockpi-backup.sh -h
 Usage:
-  sudo ./rockpi-backup.sh [-o output|-m model|-t target|-u]
+  sudo ./rockpi-backup.sh [-o output|-m model|-l label|-t target|-u]
     -o specify output position, default is $PWD
     -m specify model, rockpi4 or rockpis, default is rockpi4
+    -l specify a volume label for rootfs, default is rootfs
     -t specify target, backup or expand, default is backup
     -u unattended backup image, no confirmations asked
 linaro@rockpi:~ $
@@ -32,7 +33,7 @@ If you run it without any arguments, the script will work with the default value
 
 ```bash
 linaro@rockpi:~ $ sudo ./rockpi-backup.sh
-Welcome to use rockpi-backup.sh, part of the Rockpi toolbox.
+Welcome to rockpi-backup.sh, part of the Rockpi toolbox.
 
   Enter rockpi-backup.sh -h to view help.
   For a description and example usage, see the README.md at:
@@ -51,7 +52,7 @@ You can specify output path with provide -o argument, if it is a directory, the 
 
 ```bash
 linaro@rockpi:~ $ sudo ./rockpi-backup.sh -o /home/linaro/debian.img
-Welcome to use rockpi-backup.sh, part of the Rockpi toolbox.
+Welcome to rockpi-backup.sh, part of the Rockpi toolbox.
 
   Enter rockpi-backup.sh -h to view help.
   For a description and example usage, see the README.md at:
