@@ -1,13 +1,12 @@
 #!/bin/bash -e
 AUTHOR="Akgnah <1024@setq.me>"
-VERSION="0.10.0"
-SCRIPT_NAME=`basename $0`
+VERSION="0.12.0"
+SCRIPT_NAME=$(basename $0)
 ROOTFS_MOUNT=/tmp/rootfs
-ROOTFS_PATH=/tmp/rootfs.img
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
 
-if [ `id -u` != 0 ]; then
+if [ $(id -u) != 0 ]; then
     echo -e "${SCRIPT_NAME} needs to be run as root.\n"
     exit 1
 fi
@@ -35,8 +34,8 @@ confirm() {
 }
 
 
-commands="rsync parted gdisk resize-helper"
-packages="rsync parted gdisk 96boards-tools-common"
+commands="rsync parted gdisk resize-helper losetup kpartx"
+packages="rsync parted gdisk 96boards-tools-common util-linux kpartx"
 need_packages=""
 
 idx=1
@@ -55,14 +54,18 @@ if [ "$need_packages" != "" ]; then
 fi
 
 
+label=rootfs
 OLD_OPTIND=$OPTIND
-while getopts "o:m:t:hu" flag; do
+while getopts "o:m:l:t:hu" flag; do
   case $flag in
     o)
       output="$OPTARG"
       ;;
     m)
       model="$OPTARG"
+      ;;
+    l)
+      label="$OPTARG"
       ;;
     t)
       target="$OPTARG"
@@ -106,22 +109,19 @@ gen_partitions() {
 
 gen_image_file() {
   if [ "$output" == "" ]; then
-    output=${PWD}/rockpi-backup-`date +%y%m%d-%H%M`.img
+    output="${PWD}/rockpi-backup-$(date +%y%m%d-%H%M).img"
   else
     if [ "${output:(-4)}" == ".img" ]; then
-      mkdir -p `dirname $output`
+      mkdir -p $(dirname $output)
     else
       mkdir -p "$output"
-      output=${output%/}/rockpi-backup-`date +%y%m%d-%H%M`.img
+      output="${output%/}/rockpi-backup-$(date +%y%m%d-%H%M).img"
     fi
   fi
 
-  rootfs_size=$(expr `df -P | grep /dev/root | awk '{print $3}'` \* 5 \/ 4 \/ 1024)
-  dd if=/dev/zero of=${ROOTFS_PATH} bs=1M count=0 seek=$rootfs_size status=none
-
-  img_rootfs_size=$(stat -L --format="%s" ${ROOTFS_PATH})
-  gptimg_min_size=$(expr $img_rootfs_size + \( ${loader1_size} + ${reserved1_size} + ${reserved2_size} + ${loader2_size} + ${atf_size} + ${boot_size} + 35 \) \* 512)
-  gpt_image_size=$(expr $gptimg_min_size \/ 1024 \/ 1024 + 2)
+  rootfs_size=$(expr $(df -P | grep /dev/root | awk '{print $3}') \* 5 \/ 4 \* 1024)
+  img_min_size=$(expr $rootfs_size + \( ${loader1_size} + ${reserved1_size} + ${reserved2_size} + ${loader2_size} + ${atf_size} + ${boot_size} + 35 \) \* 512)
+  gpt_image_size=$(expr $img_min_size \/ 1024 \/ 1024 + 2)
 
   dd if=/dev/zero of=${output} bs=1M count=0 seek=$gpt_image_size status=none
 
@@ -154,35 +154,17 @@ EOF
 check_avail_space() {
   output_=${output}
   while true; do
-    store_size=`df -BM | grep "$output_\$" | awk '{print $4}' | sed 's/M//g'`
+    store_size=$(df -BM | grep "$output_\$" | awk '{print $4}' | sed 's/M//g')
     if [ "$store_size" != "" ] || [ "$output_" == "\\" ]; then
       break
     fi
-    output_=`dirname $output_`
+    output_=$(dirname $output_)
   done
 
   if [ $(expr ${store_size} - ${gpt_image_size}) -lt 64 ]; then
-    rm ${ROOTFS_PATH}
     rm ${output}
     echo -e "No space left on ${output_}\nAborted.\n"
     exit 1
-  fi
-
-  tmp_size=`df -BM | grep "/\$" | awk '{print $4}' | sed 's/M//g'`
-
-  if [ $(expr ${tmp_size} - ${gpt_image_size}) -lt 64 ]; then
-    if [ $(expr ${store_size} - ${gpt_image_size} - ${gpt_image_size}) -lt 64 ]; then
-      rm ${ROOTFS_PATH}
-      rm ${output}
-      echo -e "No space left on /tmp or ${output_}\nAborted.\n"
-      exit 1
-    else
-      echo '--------------------'
-      echo -e "No space left on /tmp, so ${SCRIPT_NAME} put a temporary rootfs.img in ${output_}"
-      confirm "Do you want to continue?" "abort"
-      mv ${ROOTFS_PATH} ${output_}/rootfs.img
-      ROOTFS_PATH=${output_}/rootfs.img
-    fi
   fi
 
   return 0
@@ -190,23 +172,31 @@ check_avail_space() {
 
 
 backup_image() {
+  loopdevice=$(losetup -f --show $output)
+  rootdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)p5"
+  sleep 2  # waiting for kpartx
   mkdir -p ${ROOTFS_MOUNT}
-  mkfs.ext4 ${ROOTFS_PATH}
-  mount -t ext4 ${ROOTFS_PATH} $ROOTFS_MOUNT
+  mkfs.ext4 -L ${label} ${rootdevice}
+  mount -t ext4 ${rootdevice} ${ROOTFS_MOUNT}
+
+  dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
+  dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
+  dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
+  dd if=${DEVICE}p4 of=${output} seek=${boot_start} conv=notrunc status=progress
 
   rsync --force -rltWDEgop --delete --stats --progress \
-  --exclude "$output" \
-  --exclude '.gvfs' \
-  --exclude '/dev' \
-  --exclude '/media' \
-  --exclude '/mnt' \
-  --exclude '/proc' \
-  --exclude '/run' \
-  --exclude '/sys' \
-  --exclude '/tmp' \
-  --exclude 'lost\+found' \
-  --exclude "$ROOTFS_MOUNT" \
-  // $ROOTFS_MOUNT
+    --exclude "$output" \
+    --exclude '.gvfs' \
+    --exclude '/dev' \
+    --exclude '/media' \
+    --exclude '/mnt' \
+    --exclude '/proc' \
+    --exclude '/run' \
+    --exclude '/sys' \
+    --exclude '/tmp' \
+    --exclude 'lost\+found' \
+    --exclude "$ROOTFS_MOUNT" \
+    // $ROOTFS_MOUNT
 
   # special dirs
   for i in dev media mnt proc run sys boot; do
@@ -222,30 +212,25 @@ backup_image() {
 
   sync
   umount $ROOTFS_MOUNT
+  losetup -d $loopdevice
+  kpartx -d $loopdevice
 
-  dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
-  dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
-  dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
-  dd if=${DEVICE}p4 of=${output} conv=notrunc seek=${boot_start} status=progress
-  dd if=${ROOTFS_PATH} of=${output} conv=notrunc,fsync seek=${rootfs_start} status=progress
-
-  rm ${ROOTFS_PATH}
-
-  echo "Backup done, backup file is ${output}"
+  echo -e "\nBackup done, backup file is ${output}"
 }
 
 
 usage() {
-  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o output|-m model|-t target|-u]"
+  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o output|-m model|-l label|-t target|-u]"
   echo '    -o specify output position, default is $PWD'
   echo '    -m specify model, rockpi4 or rockpis, default is rockpi4'
+  echo '    -l specify a volume label for rootfs, default is rootfs'
   echo '    -t specify target, backup or expand, default is backup'
   echo '    -u unattended backup image, no confirmations asked'
 }
 
 
 main() {
-  echo -e "Welcome to use rockpi-backup.sh, part of the Rockpi toolkit.\n"
+  echo -e "Welcome to rockpi-backup.sh, part of the Rockpi toolkit.\n"
   echo -e "  Enter ${SCRIPT_NAME} -h to view help."
   echo -e "  For a description and example usage, see the README.md at:
     https://rock.sh/rockpi-toolbox \n"
