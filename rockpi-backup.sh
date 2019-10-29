@@ -7,8 +7,8 @@ DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
 
 if [ $(id -u) != 0 ]; then
-    echo -e "${SCRIPT_NAME} needs to be run as root.\n"
-    exit 1
+  echo -e "${SCRIPT_NAME} needs to be run as root.\n"
+  exit 1
 fi
 
 
@@ -51,12 +51,13 @@ done
 if [ "$need_packages" != "" ]; then
   confirm "Do you want to apt-get install the packages?" "abort"
   apt-get install -y --no-install-recommends $need_packages
+  echo '--------------------'
 fi
 
 
 label=rootfs
 OLD_OPTIND=$OPTIND
-while getopts "o:m:l:t:hu" flag; do
+while getopts "o:m:l:t:uh" flag; do
   case $flag in
     o)
       output="$OPTARG"
@@ -70,13 +71,13 @@ while getopts "o:m:l:t:hu" flag; do
     t)
       target="$OPTARG"
       ;;
-    h)
-      $OPTARG
-      print_help="1"
-      ;;
     u)
       $OPTARG
       unattended="1"
+      ;;
+    h)
+      $OPTARG
+      print_help="1"
       ;;
   esac
 done
@@ -215,7 +216,7 @@ backup_image() {
   losetup -d $loopdevice
   kpartx -d $loopdevice
 
-  echo -e "\nBackup done, backup file is ${output}"
+  echo -e "\nBackup done, the file is ${output}"
 }
 
 
@@ -225,7 +226,7 @@ usage() {
   echo '    -m specify model, rockpi4 or rockpis, default is rockpi4'
   echo '    -l specify a volume label for rootfs, default is rootfs'
   echo '    -t specify target, backup or expand, default is backup'
-  echo '    -u unattended backup image, no confirmations asked'
+  echo '    -u unattended, no need to confirm in the backup process'
 }
 
 
@@ -246,7 +247,6 @@ EOF
     gen_partitions
     gen_image_file
     check_avail_space
-    echo '--------------------'
     printf "The backup file will be saved at %s\n" "$output"
     printf "After this operation, %s MB of additional disk space will be used.\n" "$gpt_image_size"
     confirm "Do you want to continue?" "clean" "$output"
