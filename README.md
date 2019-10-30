@@ -20,12 +20,13 @@ Run ./rockpi-backup.sh -h to print usage.
 ```bash
 linaro@rockpi:~ $ sudo ./rockpi-backup.sh -h
 Usage:
-  sudo ./rockpi-backup.sh [-o output|-m model|-l label|-t target|-u]
+  sudo ./rockpi-backup.sh [-o path|-e pattern|-m model|-l label|-t target|-u]
     -o specify output position, default is $PWD
+    -e exclude files matching pattern for rsync
     -m specify model, rockpi4 or rockpis, default is rockpi4
     -l specify a volume label for rootfs, default is rootfs
     -t specify target, backup or expand, default is backup
-    -u unattended backup image, no confirmations asked
+    -u unattended, no need to confirm in the backup process
 linaro@rockpi:~ $
 ```
 

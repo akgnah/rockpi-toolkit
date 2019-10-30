@@ -1,6 +1,6 @@
 #!/bin/bash -e
 AUTHOR="Akgnah <1024@setq.me>"
-VERSION="0.12.0"
+VERSION="0.13.0"
 SCRIPT_NAME=$(basename $0)
 ROOTFS_MOUNT=/tmp/rootfs
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
@@ -55,12 +55,16 @@ if [ "$need_packages" != "" ]; then
 fi
 
 
+exclude=""
 label=rootfs
 OLD_OPTIND=$OPTIND
-while getopts "o:m:l:t:uh" flag; do
+while getopts "o:e:m:l:t:uh" flag; do
   case $flag in
     o)
       output="$OPTARG"
+      ;;
+    e)
+      exclude="${exclude} --exclude ${OPTARG}"
       ;;
     m)
       model="$OPTARG"
@@ -186,6 +190,7 @@ backup_image() {
   dd if=${DEVICE}p4 of=${output} seek=${boot_start} conv=notrunc status=progress
 
   rsync --force -rltWDEgop --delete --stats --progress \
+    "$exclude" \
     --exclude "$output" \
     --exclude '.gvfs' \
     --exclude '/dev' \
@@ -221,8 +226,9 @@ backup_image() {
 
 
 usage() {
-  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o output|-m model|-l label|-t target|-u]"
+  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o path|-e pattern|-m model|-l label|-t target|-u]"
   echo '    -o specify output position, default is $PWD'
+  echo '    -e exclude files matching pattern for rsync'
   echo '    -m specify model, rockpi4 or rockpis, default is rockpi4'
   echo '    -l specify a volume label for rootfs, default is rootfs'
   echo '    -t specify target, backup or expand, default is backup'
