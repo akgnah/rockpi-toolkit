@@ -189,8 +189,7 @@ backup_image() {
   dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
   dd if=${DEVICE}p4 of=${output} seek=${boot_start} conv=notrunc status=progress
 
-  rsync --force -rltWDEgop --delete --stats --progress \
-    "$exclude" \
+  rsync --force -rltWDEgop --delete --stats --progress "$exclude" \
     --exclude "$output" \
     --exclude '.gvfs' \
     --exclude '/dev' \
