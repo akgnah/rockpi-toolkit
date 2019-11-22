@@ -124,9 +124,9 @@ gen_image_file() {
     fi
   fi
 
-  rootfs_size=$(expr $(df -P | grep /dev/root | awk '{print $3}') \* 5 \/ 4 \* 1024)
+  rootfs_size=$(expr $(df -P | grep /dev/root | awk '{print $3}') \* 6 / 5 \* 1024)
   img_min_size=$(expr $rootfs_size + \( ${loader1_size} + ${reserved1_size} + ${reserved2_size} + ${loader2_size} + ${atf_size} + ${boot_size} + 35 \) \* 512)
-  gpt_image_size=$(expr $img_min_size \/ 1024 \/ 1024 + 2)
+  gpt_image_size=$(expr $img_min_size / 1024 / 1024 + 2)
 
   dd if=/dev/zero of=${output} bs=1M count=0 seek=$gpt_image_size status=none
 
@@ -189,7 +189,7 @@ backup_image() {
   dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
   dd if=${DEVICE}p4 of=${output} seek=${boot_start} conv=notrunc status=progress
 
-  rsync --force -rltWDEgop --delete --stats --progress "$exclude" \
+  rsync --force -rltWDEgop --delete --stats --progress $exclude \
     --exclude "$output" \
     --exclude '.gvfs' \
     --exclude '/dev' \
