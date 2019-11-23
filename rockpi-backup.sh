@@ -125,10 +125,9 @@ gen_image_file() {
   fi
 
   rootfs_size=$(expr $(df -P | grep /dev/root | awk '{print $3}') \* 6 / 5 \* 1024)
-  img_min_size=$(expr $rootfs_size + \( ${loader1_size} + ${reserved1_size} + ${reserved2_size} + ${loader2_size} + ${atf_size} + ${boot_size} + 35 \) \* 512)
-  gpt_image_size=$(expr $img_min_size / 1024 / 1024 + 2)
+  backup_size=$(expr \( $rootfs_size + \( ${rootfs_start} + 35 \) \* 512 \) / 1024 / 1024)
 
-  dd if=/dev/zero of=${output} bs=1M count=0 seek=$gpt_image_size status=none
+  dd if=/dev/zero of=${output} bs=1M count=0 seek=$backup_size status=none
 
   parted -s ${output} mklabel gpt
   parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
@@ -166,7 +165,7 @@ check_avail_space() {
     output_=$(dirname $output_)
   done
 
-  if [ $(expr ${store_size} - ${gpt_image_size}) -lt 64 ]; then
+  if [ $(expr ${store_size} - ${backup_size}) -lt 64 ]; then
     rm ${output}
     echo -e "No space left on ${output_}\nAborted.\n"
     exit 1
@@ -253,7 +252,7 @@ EOF
     gen_image_file
     check_avail_space
     printf "The backup file will be saved at %s\n" "$output"
-    printf "After this operation, %s MB of additional disk space will be used.\n" "$gpt_image_size"
+    printf "After this operation, %s MB of additional disk space will be used.\n" "$backup_size"
     confirm "Do you want to continue?" "clean" "$output"
     backup_image
   fi
