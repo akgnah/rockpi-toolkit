@@ -1,8 +1,10 @@
-#!/bin/bash -e
+#!/bin/bash
+set -e
 AUTHOR="Akgnah <1024@setq.me>"
-VERSION="0.13.0"
+VERSION="0.14.0"
 SCRIPT_NAME=$(basename $0)
-ROOTFS_MOUNT=/tmp/rootfs
+BOOT_MOUNT=$(mktemp -d)
+ROOT_MOUNT=$(mktemp -d)
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
 
@@ -34,8 +36,8 @@ confirm() {
 }
 
 
-commands="rsync parted gdisk resize-helper losetup kpartx"
-packages="rsync parted gdisk 96boards-tools-common util-linux kpartx"
+commands="rsync parted gdisk kpartx mkfs.vfat losetup resize-helper"
+packages="rsync parted gdisk kpartx dosfstools util-linux 96boards-tools-common"
 need_packages=""
 
 idx=1
@@ -90,9 +92,9 @@ OPTIND=$OLD_OPTIND
 
 gen_partitions() {
   if [ "$model" == "rockpis" ]; then
-    boot_size=229376
+    boot_size=262144
   else
-    boot_size=1048576
+    boot_size=524288
   fi
 
   loader1_size=8000
@@ -177,20 +179,24 @@ check_avail_space() {
 
 backup_image() {
   loopdevice=$(losetup -f --show $output)
-  rootdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)p5"
+  mapdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)"
   sleep 2  # waiting for kpartx
-  mkdir -p ${ROOTFS_MOUNT}
-  mkfs.ext4 -L ${label} ${rootdevice}
-  mount -t ext4 ${rootdevice} ${ROOTFS_MOUNT}
+
+  mkfs.vfat -n boot ${mapdevice}p4
+  mkfs.ext4 -L ${label} ${mapdevice}p5
+  mount -t vfat ${mapdevice}p4 ${BOOT_MOUNT}
+  mount -t ext4 ${mapdevice}p5 ${ROOT_MOUNT}
 
   dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
   dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
   dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
-  dd if=${DEVICE}p4 of=${output} seek=${boot_start} conv=notrunc status=progress
+
+  rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
 
   rsync --force -rltWDEgop --delete --stats --progress $exclude \
     --exclude "$output" \
     --exclude '.gvfs' \
+    --exclude '/boot' \
     --exclude '/dev' \
     --exclude '/media' \
     --exclude '/mnt' \
@@ -199,23 +205,23 @@ backup_image() {
     --exclude '/sys' \
     --exclude '/tmp' \
     --exclude 'lost\+found' \
-    --exclude "$ROOTFS_MOUNT" \
-    // $ROOTFS_MOUNT
+    // $ROOT_MOUNT
 
   # special dirs
-  for i in dev media mnt proc run sys boot; do
-    if [ ! -d $ROOTFS_MOUNT/$i ]; then
-      mkdir $ROOTFS_MOUNT/$i
+  for i in boot dev media mnt proc run sys; do
+    if [ ! -d $ROOT_MOUNT/$i ]; then
+      mkdir $ROOT_MOUNT/$i
     fi
   done
 
-  if [ ! -d $ROOTFS_MOUNT/tmp ]; then
-    mkdir $ROOTFS_MOUNT/tmp
-    chmod a+w $ROOTFS_MOUNT/tmp
+  if [ ! -d $ROOT_MOUNT/tmp ]; then
+    mkdir $ROOT_MOUNT/tmp
+    chmod a+w $ROOT_MOUNT/tmp
   fi
 
   sync
-  umount $ROOTFS_MOUNT
+  umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
+  umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
   losetup -d $loopdevice
   kpartx -d $loopdevice
 
