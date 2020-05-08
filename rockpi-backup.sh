@@ -202,7 +202,8 @@ backup_image() {
   if [ "$model" == "rockpis" ]; then
     mkfs.ext4 -L ${label} ${mapdevice}p2
     mount -t ext4 ${mapdevice}p2 ${ROOT_MOUNT}
-    dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=$(expr ${rootfs_start} - 1) conv=notrunc
+    dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=$(expr ${boot_start} - 1) conv=notrunc
+    dd if=${DEVICE}p1 of=${output} seek=${boot_start} conv=notrunc
   else
     mkfs.vfat -n boot ${mapdevice}p4
     mkfs.ext4 -L ${label} ${mapdevice}p5
