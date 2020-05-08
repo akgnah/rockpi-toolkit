@@ -92,25 +92,29 @@ OPTIND=$OLD_OPTIND
 
 gen_partitions() {
   if [ "$model" == "rockpis" ]; then
-    boot_size=262144
+    system_start=0
+    loader1_start=64
+    loader2_start=16384
+    atf_start=24576
+    boot_start=32768
+    rootfs_start=262144
   else
     boot_size=524288
+    loader1_size=8000
+    reserved1_size=128
+    reserved2_size=8192
+    loader2_size=8192
+    atf_size=8192
+
+    system_start=0
+    loader1_start=64
+    reserved1_start=$(expr ${loader1_start} + ${loader1_size})
+    reserved2_start=$(expr ${reserved1_start} + ${reserved1_size})
+    loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
+    atf_start=$(expr ${loader2_start} + ${loader2_size})
+    boot_start=$(expr ${atf_start} + ${atf_size})
+    rootfs_start=$(expr ${boot_start} + ${boot_size})
   fi
-
-  loader1_size=8000
-  reserved1_size=128
-  reserved2_size=8192
-  loader2_size=8192
-  atf_size=8192
-
-  system_start=0
-  loader1_start=64
-  reserved1_start=$(expr ${loader1_start} + ${loader1_size})
-  reserved2_start=$(expr ${reserved1_start} + ${reserved1_size})
-  loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
-  atf_start=$(expr ${loader2_start} + ${loader2_size})
-  boot_start=$(expr ${atf_start} + ${atf_size})
-  rootfs_start=$(expr ${boot_start} + ${boot_size})
 }
 
 
@@ -126,25 +130,37 @@ gen_image_file() {
     fi
   fi
 
-  rootfs_size=$(expr $(df -P | grep /$ | awk '{print $3}') \* 6 / 5 \* 1024)
+  rootfs_size=$(expr $(df -P | grep /$ | awk '{print $3}') \* 5 / 4 \* 1024)
   backup_size=$(expr \( $rootfs_size + \( ${rootfs_start} + 35 \) \* 512 \) / 1024 / 1024)
 
   dd if=/dev/zero of=${output} bs=1M count=0 seek=$backup_size status=none
 
-  parted -s ${output} mklabel gpt
-  parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
-  parted -s ${output} unit s mkpart loader2 ${loader2_start} $(expr ${atf_start} - 1)
-  parted -s ${output} unit s mkpart trust ${atf_start} $(expr ${boot_start} - 1)
-  parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
-  parted -s ${output} set 4 boot on
-  parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
-
   if [ "$model" == "rockpis" ]; then
-    ROOT_UUID="614e0000-0000-4b53-8000-1d28000054a9"
-  else
-    ROOT_UUID="B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
-  fi
+    parted -s ${output} mklabel gpt
+    parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
+    parted -s ${output} set 1 boot on
+    parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
 
+    ROOT_UUID="614e0000-0000-4b53-8000-1d28000054a9"
+  gdisk ${output} > /dev/null << EOF
+x
+c
+2
+${ROOT_UUID}
+w
+y
+q
+EOF
+  else
+    parted -s ${output} mklabel gpt
+    parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
+    parted -s ${output} unit s mkpart loader2 ${loader2_start} $(expr ${atf_start} - 1)
+    parted -s ${output} unit s mkpart trust ${atf_start} $(expr ${boot_start} - 1)
+    parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
+    parted -s ${output} set 4 boot on
+    parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
+
+    ROOT_UUID="B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
   gdisk ${output} > /dev/null << EOF
 x
 c
@@ -154,6 +170,7 @@ w
 y
 q
 EOF
+  fi
 }
 
 
@@ -182,16 +199,23 @@ backup_image() {
   mapdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)"
   sleep 2  # waiting for kpartx
 
-  mkfs.vfat -n boot ${mapdevice}p4
-  mkfs.ext4 -L ${label} ${mapdevice}p5
-  mount -t vfat ${mapdevice}p4 ${BOOT_MOUNT}
-  mount -t ext4 ${mapdevice}p5 ${ROOT_MOUNT}
+  if [ "$model" == "rockpis" ]; then
+    mkfs.ext4 -L ${label} ${mapdevice}p2
+    mount -t ext4 ${mapdevice}p2 ${ROOT_MOUNT}
+    dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=$(expr ${rootfs_start} - 1) conv=notrunc
+  else
+    mkfs.vfat -n boot ${mapdevice}p4
+    mkfs.ext4 -L ${label} ${mapdevice}p5
+    mount -t vfat ${mapdevice}p4 ${BOOT_MOUNT}
+    mount -t ext4 ${mapdevice}p5 ${ROOT_MOUNT}
 
-  dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
-  dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
-  dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
-
-  rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
+    dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
+    dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
+    dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
+    rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
+    sync
+    umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
+  fi
 
   rsync --force -rltWDEgop --delete --stats --progress $exclude \
     --exclude "$output" \
@@ -220,7 +244,6 @@ backup_image() {
   fi
 
   sync
-  umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
   umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
   losetup -d $loopdevice
   kpartx -d $loopdevice
