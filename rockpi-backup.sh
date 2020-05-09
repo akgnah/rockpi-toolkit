@@ -250,6 +250,9 @@ update_uuid() {
     old_root_uuid=$(blkid | grep ${DEVICE}p2 | awk '{print $3}' | cut -b 6-)
     new_root_uuid=$(blkid | grep ${mapdevice}p2 | awk '{print $3}' | cut -b 6-)
     sed -i "s/${old_root_uuid:1:-1}/${new_root_uuid:1:-1}/g" $BOOT_MOUNT/extlinux/extlinux.conf
+    if [ -f $BOOT_MOUNT/uEnv.txt ]; then 
+      sed -i "s/${old_root_uuid:1:-1}/${new_root_uuid:1:-1}/g" $BOOT_MOUNT/uEnv.txt
+    fi
   fi
 }
 
