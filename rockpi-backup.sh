@@ -59,6 +59,7 @@ fi
 
 exclude=""
 label=rootfs
+model=rockpi4
 OLD_OPTIND=$OPTIND
 while getopts "o:e:m:l:t:uh" flag; do
   case $flag in
@@ -120,13 +121,13 @@ gen_partitions() {
 
 gen_image_file() {
   if [ "$output" == "" ]; then
-    output="${PWD}/rockpi-backup-$(date +%y%m%d-%H%M).img"
+    output="${PWD}/${model}-backup-$(date +%y%m%d-%H%M).img"
   else
     if [ "${output:(-4)}" == ".img" ]; then
       mkdir -p $(dirname $output)
     else
       mkdir -p "$output"
-      output="${output%/}/rockpi-backup-$(date +%y%m%d-%H%M).img"
+      output="${output%/}/${model}-backup-$(date +%y%m%d-%H%M).img"
     fi
   fi
 
@@ -140,17 +141,6 @@ gen_image_file() {
     parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
     parted -s ${output} set 1 boot on
     parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
-
-    ROOT_UUID="614e0000-0000-4b53-8000-1d28000054a9"
-  gdisk ${output} > /dev/null << EOF
-x
-c
-2
-${ROOT_UUID}
-w
-y
-q
-EOF
   else
     parted -s ${output} mklabel gpt
     parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
@@ -200,10 +190,12 @@ backup_image() {
   sleep 2  # waiting for kpartx
 
   if [ "$model" == "rockpis" ]; then
+    mkfs.vfat -n boot ${mapdevice}p1
     mkfs.ext4 -L ${label} ${mapdevice}p2
+    mount -t vfat ${mapdevice}p1 ${BOOT_MOUNT}
     mount -t ext4 ${mapdevice}p2 ${ROOT_MOUNT}
+
     dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=$(expr ${boot_start} - 1) conv=notrunc
-    dd if=${DEVICE}p1 of=${output} seek=${boot_start} conv=notrunc
   else
     mkfs.vfat -n boot ${mapdevice}p4
     mkfs.ext4 -L ${label} ${mapdevice}p5
@@ -213,10 +205,9 @@ backup_image() {
     dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
     dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
     dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
-    rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
-    sync
-    umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
   fi
+
+  rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
 
   rsync --force -rltWDEgop --delete --stats --progress $exclude \
     --exclude "$output" \
@@ -244,12 +235,22 @@ backup_image() {
     chmod a+w $ROOT_MOUNT/tmp
   fi
 
-  sync
+  update_uuid && sync
+  umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
   umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
   losetup -d $loopdevice
   kpartx -d $loopdevice
 
   echo -e "\nBackup done, the file is ${output}"
+}
+
+
+update_uuid() {
+  if [ "$model" == "rockpis" ]; then
+    old_root_uuid=$(blkid | grep ${DEVICE}p2 | awk '{print $3}' | cut -b 6-)
+    new_root_uuid=$(blkid | grep ${mapdevice}p2 | awk '{print $3}' | cut -b 6-)
+    sed -i "s/${old_root_uuid:1:-1}/${new_root_uuid:1:-1}/g" $BOOT_MOUNT/extlinux/extlinux.conf
+  fi
 }
 
 
