@@ -1,17 +1,55 @@
 #!/bin/bash
 set -e
 AUTHOR="Akgnah <1024@setq.me>"
-VERSION="0.14.0"
+VERSION="0.15.0"
 SCRIPT_NAME=$(basename $0)
 BOOT_MOUNT=$(mktemp -d)
 ROOT_MOUNT=$(mktemp -d)
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
 
-if [ $(id -u) != 0 ]; then
-  echo -e "${SCRIPT_NAME} needs to be run as root.\n"
-  exit 1
-fi
+check_root() {
+  if [ $(id -u) != 0 ]; then
+    echo -e "${SCRIPT_NAME} needs to be run as root.\n"
+    exit 1
+  fi
+}
+
+
+get_option() {
+  exclude=""
+  label=rootfs
+  model=rockpi4
+  OLD_OPTIND=$OPTIND
+  while getopts "o:e:m:l:t:uh" flag; do
+    case $flag in
+      o)
+        output="$OPTARG"
+        ;;
+      e)
+        exclude="${exclude} --exclude ${OPTARG}"
+        ;;
+      m)
+        model="$OPTARG"
+        ;;
+      l)
+        label="$OPTARG"
+        ;;
+      t)
+        target="$OPTARG"
+        ;;
+      u)
+        $OPTARG
+        unattended="1"
+        ;;
+      h)
+        $OPTARG
+        print_help="1"
+        ;;
+    esac
+  done
+  OPTIND=$OLD_OPTIND
+}
 
 
 confirm() {
@@ -36,59 +74,37 @@ confirm() {
 }
 
 
-commands="rsync parted gdisk kpartx mkfs.vfat losetup resize-helper"
-packages="rsync parted gdisk kpartx dosfstools util-linux 96boards-tools-common"
-need_packages=""
+install_tools() {
+  commands="rsync parted gdisk kpartx mkfs.vfat losetup"
+  packages="rsync parted gdisk kpartx dosfstools util-linux"
 
-idx=1
-for cmd in $commands; do
-  if ! command -v $cmd > /dev/null; then
-    pkg=$(echo "$packages" | cut -d " " -f $idx)
-    printf "%-30s %s\n" "Command not found: $cmd", "package required: $pkg"
-    need_packages="$need_packages $pkg"
+  if [ "$model" == "rockpi4" ]; then
+    commands="$commands resize-helper"
+    packages="$packages 96boards-tools-common"
   fi
-  ((++idx))
-done
 
-if [ "$need_packages" != "" ]; then
-  confirm "Do you want to apt-get install the packages?" "abort"
-  apt-get install -y --no-install-recommends $need_packages
-  echo '--------------------'
-fi
+  idx=1
+  need_packages=""
+  for cmd in $commands; do
+    if ! command -v $cmd > /dev/null; then
+      pkg=$(echo "$packages" | cut -d " " -f $idx)
+      printf "%-30s %s\n" "Command not found: $cmd", "package required: $pkg"
+      need_packages="$need_packages $pkg"
+    fi
+    ((++idx))
+  done
 
+  if [ "$need_packages" != "" ]; then
+    confirm "Do you want to apt-get install the packages?" "abort"
+    apt-get update
+    apt-get install -y --no-install-recommends $need_packages
+    echo '--------------------'
+  fi
 
-exclude=""
-label=rootfs
-model=rockpi4
-OLD_OPTIND=$OPTIND
-while getopts "o:e:m:l:t:uh" flag; do
-  case $flag in
-    o)
-      output="$OPTARG"
-      ;;
-    e)
-      exclude="${exclude} --exclude ${OPTARG}"
-      ;;
-    m)
-      model="$OPTARG"
-      ;;
-    l)
-      label="$OPTARG"
-      ;;
-    t)
-      target="$OPTARG"
-      ;;
-    u)
-      $OPTARG
-      unattended="1"
-      ;;
-    h)
-      $OPTARG
-      print_help="1"
-      ;;
-  esac
-done
-OPTIND=$OLD_OPTIND
+  if [ "$model" == "rockpis" ]; then
+    . /usr/local/sbin/update_uenv.sh
+  fi
+}
 
 
 gen_partitions() {
@@ -141,6 +157,16 @@ gen_image_file() {
     parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
     parted -s ${output} set 1 boot on
     parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
+
+    ROOT_UUID=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
+    fdisk ${output} > /dev/null << EOF
+x
+u
+2
+${ROOT_UUID}
+r
+w
+EOF
   else
     parted -s ${output} mklabel gpt
     parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
@@ -151,7 +177,7 @@ gen_image_file() {
     parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
 
     ROOT_UUID="B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
-  gdisk ${output} > /dev/null << EOF
+    gdisk ${output} > /dev/null << EOF
 x
 c
 5
@@ -235,7 +261,7 @@ backup_image() {
     chmod a+w $ROOT_MOUNT/tmp
   fi
 
-  update_uuid && sync
+  expand_fs && update_uuid && sync
   umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
   umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
   losetup -d $loopdevice
@@ -245,13 +271,44 @@ backup_image() {
 }
 
 
+expand_fs() {
+  basic_target=$ROOT_MOUNT/etc/systemd/system/basic.target.wants
+  if [ ! -d $basic_target ]; then
+    mkdir $basic_target
+  fi
+
+  if [ "$model" == "rockpi4" ]; then
+    ln -s $ROOT_MOUNT/lib/systemd/system/resize-helper.service $basic_target/resize-helper.service
+  fi
+
+  if [ "$model" == "rockpis" ]; then
+    ln -s $ROOT_MOUNT/lib/systemd/system/resize-assistant.service $basic_target/resize-assistant.service
+  fi
+}
+
+
+target_expand() {
+  gdisk ${DEVICE} << EOF
+w
+y
+y
+EOF
+  systemctl enable resize-helper
+}
+
+
 update_uuid() {
   if [ "$model" == "rockpis" ]; then
-    old_root_uuid=$(blkid | grep ${DEVICE}p2 | awk '{print $3}' | cut -b 6-)
-    new_root_uuid=$(blkid | grep ${mapdevice}p2 | awk '{print $3}' | cut -b 6-)
-    sed -i "s/${old_root_uuid:1:-1}/${new_root_uuid:1:-1}/g" $BOOT_MOUNT/extlinux/extlinux.conf
-    if [ -f $BOOT_MOUNT/uEnv.txt ]; then 
-      sed -i "s/${old_root_uuid:1:-1}/${new_root_uuid:1:-1}/g" $BOOT_MOUNT/uEnv.txt
+    old_boot_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
+    old_root_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
+    new_boot_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
+    new_root_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
+
+    sed -i "s/$old_boot_uuid/$new_boot_uuid/g" $ROOT_MOUNT/etc/fstab
+    sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
+    sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $BOOT_MOUNT/extlinux/extlinux.conf
+    if [ -f $BOOT_MOUNT/uEnv.txt ]; then
+      sed -i "s/${old_root_uuid#*=}/${new_root_uuid#*=}/g" $BOOT_MOUNT/uEnv.txt
     fi
   fi
 }
@@ -269,30 +326,31 @@ usage() {
 
 
 main() {
-  echo -e "Welcome to rockpi-backup.sh, part of the Rockpi toolkit.\n"
+  check_root
+
+  echo -e "Welcome to rockpi-backup.sh, part of the ROCK Pi toolkit.\n"
   echo -e "  Enter ${SCRIPT_NAME} -h to view help."
   echo -e "  For a description and example usage, see the README.md at:
     https://rock.sh/rockpi-toolbox \n"
   echo '--------------------'
+
   if [ "$target" == "expand" ]; then
-    gdisk ${DEVICE} << EOF
-w
-y
-y
-EOF
-    systemctl enable resize-helper
+    target_expand
   else
+    install_tools
     gen_partitions
     gen_image_file
     check_avail_space
+
     printf "The backup file will be saved at %s\n" "$output"
     printf "After this operation, %s MB of additional disk space will be used.\n" "$backup_size"
     confirm "Do you want to continue?" "clean" "$output"
+
     backup_image
   fi
 }
 
-
+get_option $@
 if [ "$print_help" == "1" ]; then
   usage
 else
