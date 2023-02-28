@@ -75,8 +75,8 @@ confirm() {
 
 
 install_tools() {
-  commands="rsync parted gdisk kpartx mkfs.vfat losetup"
-  packages="rsync parted gdisk kpartx dosfstools util-linux"
+  commands="rsync parted gdisk fdisk kpartx mkfs.vfat losetup"
+  packages="rsync parted gdisk fdisk kpartx dosfstools util-linux"
 
   if [ "$model" == "rockpi4" ]; then
     commands="$commands resize-helper"
@@ -115,6 +115,22 @@ gen_partitions() {
     atf_start=24576
     boot_start=32768
     rootfs_start=262144
+  elif [ "$model" == "rk356x" ]; then
+    loader1_size=8000
+    reserved1_size=128
+    reserved2_size=8192
+    loader2_size=8192
+    atf_size=8192
+    boot_size=1048576
+
+    system_start=0
+    loader1_start=64
+    reserved1_start=$(expr ${loader1_start} + ${loader1_size})
+    reserved2_start=$(expr ${reserved1_start} + ${reserved1_size})
+    loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
+    atf_start=$(expr ${loader2_start} + ${loader2_size})
+    boot_start=$(expr ${atf_start} + ${atf_size})
+    rootfs_start=$(expr ${boot_start} + ${boot_size})
   else
     boot_size=524288
     loader1_size=8000
@@ -148,11 +164,11 @@ gen_image_file() {
   fi
 
   rootfs_size=$(expr $(df -P | grep /$ | awk '{print $3}') \* 5 / 4 \* 1024)
-  backup_size=$(expr \( $rootfs_size + \( ${rootfs_start} + 35 \) \* 512 \) / 1024 / 1024)
+  backup_size=$(expr \( $rootfs_size + \( ${rootfs_start} + 40 \) \* 512 \) / 1024 / 1024)
 
   dd if=/dev/zero of=${output} bs=1M count=0 seek=$backup_size status=none
 
-  if [ "$model" == "rockpis" ]; then
+  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
     parted -s ${output} mklabel gpt
     parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
     parted -s ${output} set 1 boot on
@@ -209,13 +225,12 @@ check_avail_space() {
   return 0
 }
 
-
 backup_image() {
   loopdevice=$(losetup -f --show $output)
   mapdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)"
   sleep 2  # waiting for kpartx
 
-  if [ "$model" == "rockpis" ]; then
+  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
     mkfs.vfat -n boot ${mapdevice}p1
     mkfs.ext4 -L ${label} ${mapdevice}p2
     mount -t vfat ${mapdevice}p1 ${BOOT_MOUNT}
@@ -281,7 +296,7 @@ expand_fs() {
     ln -s $ROOT_MOUNT/lib/systemd/system/resize-helper.service $basic_target/resize-helper.service
   fi
 
-  if [ "$model" == "rockpis" ]; then
+  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
     ln -s $ROOT_MOUNT/lib/systemd/system/resize-assistant.service $basic_target/resize-assistant.service
   fi
 }
@@ -298,7 +313,7 @@ EOF
 
 
 update_uuid() {
-  if [ "$model" == "rockpis" ]; then
+  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
     old_boot_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
     old_root_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
     new_boot_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
@@ -318,12 +333,11 @@ usage() {
   echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o path|-e pattern|-m model|-l label|-t target|-u]"
   echo '    -o specify output position, default is $PWD'
   echo '    -e exclude files matching pattern for rsync'
-  echo '    -m specify model, rockpi4 or rockpis, default is rockpi4'
+  echo '    -m specify model, rockpi4, rockpis or rk356x, default is rockpi4'
   echo '    -l specify a volume label for rootfs, default is rootfs'
   echo '    -t specify target, backup or expand, default is backup'
   echo '    -u unattended, no need to confirm in the backup process'
 }
-
 
 main() {
   check_root

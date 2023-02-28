@@ -23,7 +23,7 @@ Usage:
   sudo ./rockpi-backup.sh [-o path|-e pattern|-m model|-l label|-t target|-u]
     -o specify output position, default is $PWD
     -e exclude files matching pattern for rsync
-    -m specify model, rockpi4 or rockpis, default is rockpi4
+    -m specify model, rockpi4, rockpis or rk356x, default is rockpi4
     -l specify a volume label for rootfs, default is rootfs
     -t specify target, backup or expand, default is backup
     -u unattended, no need to confirm in the backup process
