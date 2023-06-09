@@ -219,14 +219,8 @@ backup_image() {
 }
 
 expand_fs() {
-  basic_target=$ROOT_MOUNT/etc/systemd/system/basic.target.wants
-  if [ ! -d $basic_target ]; then
-    mkdir $basic_target
-  fi
-
-  if [ "$model" ]; then
-    ln -s $ROOT_MOUNT/lib/systemd/system/resize-assistant.service $basic_target/resize-assistant.service
-  fi
+  rm $ROOT_MOUNT/etc/growroot-grown
+  echo "resize_root" > $CONFIG_MOUNT/before.txt
 }
 
 update_uuid() {
