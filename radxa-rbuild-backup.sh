@@ -226,7 +226,7 @@ expand_fs() {
 update_uuid() {
   if [ "$model" ]; then
     old_config_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
-    old_root_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
+    old_root_uuid=$(blkid -o export ${DEVICE}p3 | grep ^UUID)
     new_config_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
     new_root_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
 
