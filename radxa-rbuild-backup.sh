@@ -225,6 +225,9 @@ expand_fs() {
 
 update_uuid() {
   if [ "$model" ]; then
+    old_efi_fstab=$(cat /etc/fstab | grep /boot/efi)
+    new_efi_fstab=#$(cat /etc/fstab | grep /boot/efi)
+
     old_config_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
     old_root_uuid=$(blkid -o export ${DEVICE}p3 | grep ^UUID)
     new_config_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
@@ -232,6 +235,7 @@ update_uuid() {
 
     sed -i "s/$old_config_uuid/$new_config_uuid/g" $ROOT_MOUNT/etc/fstab
     sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
+    sed -i "s|$old_efi_fstab|$new_efi_fstab|g" $ROOT_MOUNT/etc/fstab
     sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $ROOT_MOUNT/boot/extlinux/extlinux.conf
   fi
 }
