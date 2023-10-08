@@ -5,6 +5,7 @@ MODEL=`cat /proc/device-tree/model`
 BOARD_NAME=${MODEL// /-}
 SCRIPT_NAME=$(basename $0)
 CONFIG_MOUNT=$(mktemp -d)
+EFI_MOUNT=$(mktemp -d)
 ROOT_MOUNT=$(mktemp -d)
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
@@ -105,7 +106,8 @@ gen_partitions() {
     loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
     atf_start=$(expr ${loader2_start} + ${loader2_size})
     boot_start=$(expr ${atf_start} + ${atf_size})
-    rootfs_start=65536
+    efi_start=65536
+    rootfs_start=679936
   else
     echo cannot find board name !!!
     exit -1
@@ -131,20 +133,14 @@ gen_image_file() {
 
   if [ "$model" ]; then
     parted -s ${output} mklabel gpt
-    parted -s ${output} unit s mkpart config ${config_start} $(expr ${rootfs_start} - 1)
+    parted -s ${output} unit s mkpart config ${config_start} $(expr ${efi_start} - 1)
+
+    parted -s ${output} unit s mkpart boot ${efi_start} $(expr ${rootfs_start} - 1)
+    parted -s ${output} set 2 boot on
 
     parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
-    parted -s ${output} set 2 boot on
-    ROOT_UUID=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
+    parted -s ${output} set 3 boot on
 
-    fdisk ${output} > /dev/null << EOF
-x
-u
-2
-${ROOT_UUID}
-r
-w
-EOF
   fi
 }
 
@@ -174,15 +170,17 @@ backup_image() {
 
   if [ "$model" ]; then
     mkfs.vfat -n config ${mapdevice}p1
-    mkfs.ext4 -L ${label} ${mapdevice}p2
+    mkfs.vfat -n boot ${mapdevice}p2
+    mkfs.ext4 -L ${label} ${mapdevice}p3
     mount -t vfat ${mapdevice}p1 ${CONFIG_MOUNT}
-    mount -t ext4 ${mapdevice}p2 ${ROOT_MOUNT}
+    mount -t vfat ${mapdevice}p2 ${EFI_MOUNT}
+    mount -t ext4 ${mapdevice}p3 ${ROOT_MOUNT}
 
     dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=32703 conv=notrunc
   fi
 
   rsync --force -rltWDEgop --delete --stats --progress //config/ ${CONFIG_MOUNT}
-
+  rsync --force -rltWDEgop --delete --stats --progress //boot/efi/ ${EFI_MOUNT}
   rsync --force -rltWDEgop --delete --stats --progress $exclude \
     --exclude "$output" \
     --exclude '.gvfs' \
@@ -225,18 +223,21 @@ expand_fs() {
 
 update_uuid() {
   if [ "$model" ]; then
-    old_efi_fstab=$(cat /etc/fstab | grep /boot/efi)
-    new_efi_fstab=#$(cat /etc/fstab | grep /boot/efi)
 
     old_config_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
+    old_efi_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
     old_root_uuid=$(blkid -o export ${DEVICE}p3 | grep ^UUID)
+    
     new_config_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
-    new_root_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
+    new_efi_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
+    new_root_uuid=$(blkid -o export ${mapdevice}p3 | grep ^UUID)
 
     sed -i "s/$old_config_uuid/$new_config_uuid/g" $ROOT_MOUNT/etc/fstab
+    sed -i "s/$old_efi_uuid/$new_efi_uuid/g" $ROOT_MOUNT/etc/fstab
     sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
-    sed -i "s|$old_efi_fstab|$new_efi_fstab|g" $ROOT_MOUNT/etc/fstab
+
     sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $ROOT_MOUNT/boot/extlinux/extlinux.conf
+    sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $ROOT_MOUNT/etc/kernel/cmdline
   fi
 }
 
