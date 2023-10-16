@@ -209,9 +209,11 @@ backup_image() {
 
   expand_fs && update_uuid && sync
   umount $CONFIG_MOUNT && rm -rf $CONFIG_MOUNT
+  umount $EFI_MOUNT && rm -rf $EFI_MOUNT
   umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
-  losetup -d $loopdevice
+
   kpartx -d $loopdevice
+  losetup -d $loopdevice
 
   echo -e "\nBackup done, the file is ${output}"
 }
@@ -227,7 +229,7 @@ update_uuid() {
     old_config_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
     old_efi_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
     old_root_uuid=$(blkid -o export ${DEVICE}p3 | grep ^UUID)
-    
+
     new_config_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
     new_efi_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
     new_root_uuid=$(blkid -o export ${mapdevice}p3 | grep ^UUID)
