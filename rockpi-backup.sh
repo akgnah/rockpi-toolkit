@@ -225,6 +225,7 @@ check_avail_space() {
   return 0
 }
 
+
 backup_image() {
   loopdevice=$(losetup -f --show $output)
   mapdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)"
@@ -318,13 +319,19 @@ update_uuid() {
     old_root_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
     new_boot_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
     new_root_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
+  else
+    old_boot_uuid=$(blkid -o export ${DEVICE}p4 | grep ^UUID)
+    old_root_uuid=$(blkid -o export ${DEVICE}p5 | grep ^UUID)
+    new_boot_uuid=$(blkid -o export ${mapdevice}p4 | grep ^UUID)
+    new_root_uuid=$(blkid -o export ${mapdevice}p5 | grep ^UUID)
+  fi
 
-    sed -i "s/$old_boot_uuid/$new_boot_uuid/g" $ROOT_MOUNT/etc/fstab
-    sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
-    sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $BOOT_MOUNT/extlinux/extlinux.conf
-    if [ -f $BOOT_MOUNT/uEnv.txt ]; then
-      sed -i "s/${old_root_uuid#*=}/${new_root_uuid#*=}/g" $BOOT_MOUNT/uEnv.txt
-    fi
+  sed -i "s/$old_boot_uuid/$new_boot_uuid/g" $ROOT_MOUNT/etc/fstab
+  sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
+  sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $BOOT_MOUNT/extlinux/extlinux.conf
+
+  if [ -f $BOOT_MOUNT/uEnv.txt ]; then
+    sed -i "s/${old_root_uuid#*=}/${new_root_uuid#*=}/g" $BOOT_MOUNT/uEnv.txt
   fi
 }
 
@@ -338,6 +345,7 @@ usage() {
   echo '    -t specify target, backup or expand, default is backup'
   echo '    -u unattended, no need to confirm in the backup process'
 }
+
 
 main() {
   check_root
@@ -363,6 +371,7 @@ main() {
     backup_image
   fi
 }
+
 
 get_option $@
 if [ "$print_help" == "1" ]; then
