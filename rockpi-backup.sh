@@ -1,12 +1,16 @@
 #!/bin/bash
 set -e
-AUTHOR="Akgnah <1024@setq.me>"
-VERSION="0.15.0"
 SCRIPT_NAME=$(basename $0)
-BOOT_MOUNT=$(mktemp -d)
 ROOT_MOUNT=$(mktemp -d)
+
 DEVICE=/dev/$(mount | sed -n 's|^/dev/\(.*\) on / .*|\1|p' | cut -b 1-7)
 
+model=`uname -n`
+
+MOUNT_POINT=/
+GROW_SCRIPT=/usr/local/bin/growpart-by-backup.sh
+GROW_SERVER_NAME=growpart-by-backup
+GROW_SERVER=/etc/systemd/system/$GROW_SERVER_NAME.service
 
 check_root() {
   if [ $(id -u) != 0 ]; then
@@ -19,24 +23,14 @@ check_root() {
 get_option() {
   exclude=""
   label=rootfs
-  model=rockpi4
   OLD_OPTIND=$OPTIND
-  while getopts "o:e:m:l:t:uh" flag; do
+  while getopts "o:e:uhm:" flag; do
     case $flag in
       o)
         output="$OPTARG"
         ;;
       e)
         exclude="${exclude} --exclude ${OPTARG}"
-        ;;
-      m)
-        model="$OPTARG"
-        ;;
-      l)
-        label="$OPTARG"
-        ;;
-      t)
-        target="$OPTARG"
         ;;
       u)
         $OPTARG
@@ -45,6 +39,9 @@ get_option() {
       h)
         $OPTARG
         print_help="1"
+        ;;
+      m)
+        MOUNT_POINT="$OPTARG"
         ;;
     esac
   done
@@ -56,7 +53,7 @@ confirm() {
   if [ "$unattended" == "1" ]; then
     return 0
   fi
-  printf "\n%s [Y/n] " "$1"
+  printf "\n%s [y/N] " "$1"
   read resp
   if [ "$resp" == "Y" ] || [ "$resp" == "y" ] || [ "$resp" == "yes" ]; then
     return 0
@@ -74,14 +71,77 @@ confirm() {
 }
 
 
-install_tools() {
-  commands="rsync parted gdisk fdisk kpartx mkfs.vfat losetup"
-  packages="rsync parted gdisk fdisk kpartx dosfstools util-linux"
+check_part() {
+  echo Checking disk...
 
-  if [ "$model" == "rockpi4" ]; then
-    commands="$commands resize-helper"
-    packages="$packages 96boards-tools-common"
+  device_part=$(df $MOUNT_POINT --output=source | tail -n +2)
+
+  device=/dev/`lsblk -no pkname,MOUNTPOINT | grep "$MOUNT_POINT$" | awk '{print $1}'`
+  device_part_num=`gdisk $device -l | awk '{last_line=$0} END{print $1}'`
+  disk_type=`parted $device print | grep "Partition Table" | awk '{print $3}'`
+  if [ "$disk_type" != "gpt" ]; then
+    echo "Only supports GPT disk type."
+    exit -1
   fi
+  last_part_start=$(fdisk $device -l | grep $device | awk '{last_line=$0} END{print $2}')
+  rootfs_start=$(fdisk $device -l | grep $device_part | awk 'NR == 1{print $2}')
+
+  if [ "$last_part_start" != "$rootfs_start" ]; then
+    echo "Unsupported partition format. The root partition is not at the end, or the root partition is not the largest partition."
+    exit -2
+  fi
+
+  fstype=`lsblk $device_part -no FSTYPE,PATH | awk '{print $1}'`
+
+  if [ "$fstype" != "ext4"  ];then
+    echo "Only supports ext4 fstype."
+    exit -1
+  fi
+}
+
+create_service(){
+  echo Create service...
+    echo "[Unit]
+Description=Auto grow the root part.
+After=-.mount
+
+[Service]
+ExecStart=$GROW_SCRIPT
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target
+" > $MOUNT_POINT$GROW_SERVER
+
+  ln -s $MOUNT_POINT$GROW_SERVER  $MOUNT_POINT/etc/systemd/system/multi-user.target.wants/ || true
+
+  echo "#!/bin/bash
+# Auto create by $SCRIPT_NAME
+
+set -e
+ROOT_PART=/dev/\`lsblk -no pkname,MOUNTPOINT | grep \"/$\" | awk '{print \$1}'\`
+ROOT_PART_NO=$device_part_num
+ROOT_DEV=\`lsblk -no PATH,MOUNTPOINT | grep \"/$\" | awk '{print \$1}'\`
+
+# fix disk size
+echo w | fdisk \$ROOT_PART
+
+echo -e \"resizepart \$ROOT_PART_NO 100%\ny\" | parted ---pretend-input-tty \$ROOT_PART
+
+# ext4 part only
+resize2fs \$ROOT_DEV
+
+# disabled server
+systemctl disable $GROW_SERVER_NAME
+" > $MOUNT_POINT$GROW_SCRIPT
+
+  chmod +x $MOUNT_POINT$GROW_SCRIPT
+
+}
+
+install_tools() {
+  commands="rsync parted gdisk fdisk kpartx tune2fs losetup "
+  packages="rsync parted gdisk fdisk kpartx e2fsprogs util-linux"
 
   idx=1
   need_packages=""
@@ -100,116 +160,33 @@ install_tools() {
     apt-get install -y --no-install-recommends $need_packages
     echo '--------------------'
   fi
-
-  if [ "$model" == "rockpis" ]; then
-    . /usr/local/sbin/update_uenv.sh
-  fi
 }
-
-
-gen_partitions() {
-  if [ "$model" == "rockpis" ]; then
-    system_start=0
-    loader1_start=64
-    loader2_start=16384
-    atf_start=24576
-    boot_start=32768
-    rootfs_start=262144
-  elif [ "$model" == "rk356x" ]; then
-    loader1_size=8000
-    reserved1_size=128
-    reserved2_size=8192
-    loader2_size=8192
-    atf_size=8192
-    boot_size=1048576
-
-    system_start=0
-    loader1_start=64
-    reserved1_start=$(expr ${loader1_start} + ${loader1_size})
-    reserved2_start=$(expr ${reserved1_start} + ${reserved1_size})
-    loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
-    atf_start=$(expr ${loader2_start} + ${loader2_size})
-    boot_start=$(expr ${atf_start} + ${atf_size})
-    rootfs_start=$(expr ${boot_start} + ${boot_size})
-  else
-    boot_size=524288
-    loader1_size=8000
-    reserved1_size=128
-    reserved2_size=8192
-    loader2_size=8192
-    atf_size=8192
-
-    system_start=0
-    loader1_start=64
-    reserved1_start=$(expr ${loader1_start} + ${loader1_size})
-    reserved2_start=$(expr ${reserved1_start} + ${reserved1_size})
-    loader2_start=$(expr ${reserved2_start} + ${reserved2_size})
-    atf_start=$(expr ${loader2_start} + ${loader2_size})
-    boot_start=$(expr ${atf_start} + ${atf_size})
-    rootfs_start=$(expr ${boot_start} + ${boot_size})
-  fi
-}
-
 
 gen_image_file() {
   if [ "$output" == "" ]; then
     output="${PWD}/${model}-backup-$(date +%y%m%d-%H%M).img"
   else
     if [ "${output:(-4)}" == ".img" ]; then
+      output=$(realpath $output)
       mkdir -p $(dirname $output)
     else
+      output=$(realpath $output)
       mkdir -p "$output"
       output="${output%/}/${model}-backup-$(date +%y%m%d-%H%M).img"
     fi
   fi
 
-  rootfs_size=$(expr $(df -P | grep /$ | awk '{print $3}') \* 5 / 4 \* 1024)
-  backup_size=$(expr \( $rootfs_size + \( ${rootfs_start} + 40 \) \* 512 \) / 1024 / 1024)
+  rootfs_size=$(df -B512 $MOUNT_POINT | awk 'NR == 2{print $3}')
+  backup_size=$(expr $rootfs_size +  $rootfs_start + 40 + 1000000 )
 
-  dd if=/dev/zero of=${output} bs=1M count=0 seek=$backup_size status=none
-
-  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
-    parted -s ${output} mklabel gpt
-    parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
-    parted -s ${output} set 1 boot on
-    parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
-
-    ROOT_UUID=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
-    fdisk ${output} > /dev/null << EOF
-x
-u
-2
-${ROOT_UUID}
-r
-w
-EOF
-  else
-    parted -s ${output} mklabel gpt
-    parted -s ${output} unit s mkpart loader1 ${loader1_start} $(expr ${reserved1_start} - 1)
-    parted -s ${output} unit s mkpart loader2 ${loader2_start} $(expr ${atf_start} - 1)
-    parted -s ${output} unit s mkpart trust ${atf_start} $(expr ${boot_start} - 1)
-    parted -s ${output} unit s mkpart boot ${boot_start} $(expr ${rootfs_start} - 1)
-    parted -s ${output} set 4 boot on
-    parted -s ${output} -- unit s mkpart rootfs ${rootfs_start} -34s
-
-    ROOT_UUID="B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
-    gdisk ${output} > /dev/null << EOF
-x
-c
-5
-${ROOT_UUID}
-w
-y
-q
-EOF
-  fi
+  dd if=/dev/zero of=${output} bs=512 count=0 seek=$backup_size status=none
 }
 
 
 check_avail_space() {
   output_=${output}
   while true; do
-    store_size=$(df -BM | grep "$output_\$" | awk '{print $4}' | sed 's/M//g')
+    store_size=$(df -B512 | grep "$output_\$" | awk '{print $4}' | sed 's/M//g')
     if [ "$store_size" != "" ] || [ "$output_" == "\\" ]; then
       break
     fi
@@ -225,48 +202,108 @@ check_avail_space() {
   return 0
 }
 
+rebuild_root_partition() {
+  echo rebuild root partition...
+
+  echo Delete inappropriate partition and fix
+  echo -e "d\n$device_part_num\nw\ny" | gdisk $output > /dev/null
+
+  # get partition infomations
+  local type=`echo -e "x\ni\n$device_part_num\n" | gdisk $device |grep "Partition GUID code:"| awk '{print $12}'`
+  local guid=`echo -e "x\ni\n$device_part_num\n" | gdisk $device |grep "Partition unique GUID:"| awk '{print $4}'`
+  local attribute_flags=$((16#`echo -e "x\ni\n$device_part_num\n" | gdisk $device |grep "Attribute flags:"| awk '{print $3}'`))
+  local _partition_name=`echo -e "x\ni\n$device_part_num\n" | gdisk $device |grep "Partition name:"| awk '{print $3}'`
+  local partition_name=${_partition_name:1:-1}
+
+  echo Create new root partition
+  echo -e "n\n$device_part_num\n$rootfs_start\n\n\nw\ny\n" | gdisk $output > /dev/null
+
+  echo Change part GUID
+  echo -e "x\nc\n$device_part_num\n$guid\nw\ny\n" | gdisk $output > /dev/null
+
+  echo Change part Label
+  echo -e "c\n$device_part_num\n$partition_name\nw\ny\n" | gdisk $output > /dev/null
+
+  echo Change part type
+  echo -e "t\n$device_part_num\n$type\nw\ny\n" | gdisk $output > /dev/null
+
+  echo Change attribute_flag
+  flag_str=""
+  local t=0
+  echo flags $attribute_flags
+  while [ $attribute_flags -ne 0 ]
+  do
+    echo $attribute_flags
+    if (( (attribute_flags & 1) != 0 )); then
+      flag_str="$flag_str$t\n"
+    fi
+    (( attribute_flags = attribute_flags >> 1 )) || true
+    (( t = t + 1))
+  done
+  echo "x\na\n$device_part_num\n$flag_str\nw\ny\n"
+  echo -e "x\na\n$device_part_num\n$flag_str\nw\ny\n" | gdisk $output
+}
+
+exclude_mounted_part() {
+  # The other parts have been copied
+  echo Exclude mounted part...
+  _exclude=""
+  for i in `lsblk -no PATH,MOUNTPOINT | awk {'print $2'}`;
+  do
+    if [ "$i" != "$MOUNT_POINT" ] ;then
+      _exclude="$_exclude --exclude $i"
+    fi
+  done
+  echo $_exclude
+
+}
 
 backup_image() {
+
+  echo "Copy other partition"
+  dd if=$device of=$output bs=512 seek=0 count=$(expr $rootfs_start - 1) status=progress conv=notrunc
+
+  rebuild_root_partition
+
+  echo Mount loop device...
   loopdevice=$(losetup -f --show $output)
   mapdevice="/dev/mapper/$(kpartx -va $loopdevice | sed -E 's/.*(loop[0-9]+)p.*/\1/g' | head -1)"
   sleep 2  # waiting for kpartx
 
-  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
-    mkfs.vfat -n boot ${mapdevice}p1
-    mkfs.ext4 -L ${label} ${mapdevice}p2
-    mount -t vfat ${mapdevice}p1 ${BOOT_MOUNT}
-    mount -t ext4 ${mapdevice}p2 ${ROOT_MOUNT}
+  loop_root_dev=${mapdevice}p$device_part_num
 
-    dd if=${DEVICE} of=${output} skip=${loader1_start} seek=${loader1_start} count=$(expr ${boot_start} - 1) conv=notrunc
-  else
-    mkfs.vfat -n boot ${mapdevice}p4
-    mkfs.ext4 -L ${label} ${mapdevice}p5
-    mount -t vfat ${mapdevice}p4 ${BOOT_MOUNT}
-    mount -t ext4 ${mapdevice}p5 ${ROOT_MOUNT}
+  echo format root partition...
+  mkfs.ext4 $loop_root_dev
 
-    dd if=${DEVICE}p1 of=${output} seek=${loader1_start} conv=notrunc
-    dd if=${DEVICE}p2 of=${output} seek=${loader2_start} conv=notrunc
-    dd if=${DEVICE}p3 of=${output} seek=${atf_start} conv=notrunc
-  fi
+  e2fsck -f $loop_root_dev
 
-  rsync --force -rltWDEgop --delete --stats --progress //boot/ ${BOOT_MOUNT}
+  tune2fs -U `lsblk $device_part -no UUID` $loop_root_dev
 
-  rsync --force -rltWDEgop --delete --stats --progress $exclude \
+  mount $loop_root_dev $ROOT_MOUNT
+
+
+
+  exclude_mounted_part
+
+  echo Start rsync...
+
+
+  rsync --force -rltWDEHSgop --delete --stats --progress $_exclude $exclude \
     --exclude "$output" \
-    --exclude '.gvfs' \
-    --exclude '/boot' \
-    --exclude '/dev' \
-    --exclude '/media' \
-    --exclude '/mnt' \
-    --exclude '/proc' \
-    --exclude '/run' \
-    --exclude '/sys' \
-    --exclude '/tmp' \
-    --exclude 'lost\+found' \
-    // $ROOT_MOUNT
+    --exclude .gvfs \
+    --exclude $MOUNT_POINT/dev \
+    --exclude $MOUNT_POINT/media \
+    --exclude $MOUNT_POINT/mnt \
+    --exclude $MOUNT_POINT/proc \
+    --exclude $MOUNT_POINT/run \
+    --exclude $MOUNT_POINT/sys \
+    --exclude $MOUNT_POINT/tmp \
+    --exclude lost+found \
+    --exclude $MOUNT_POINT/var/log \
+    $MOUNT_POINT/ $ROOT_MOUNT
 
   # special dirs
-  for i in boot dev media mnt proc run sys; do
+  for i in dev media mnt proc run sys; do
     if [ ! -d $ROOT_MOUNT/$i ]; then
       mkdir $ROOT_MOUNT/$i
     fi
@@ -277,73 +314,23 @@ backup_image() {
     chmod a+w $ROOT_MOUNT/tmp
   fi
 
-  expand_fs && update_uuid && sync
-  umount $BOOT_MOUNT && rm -rf $BOOT_MOUNT
+  sync
   umount $ROOT_MOUNT && rm -rf $ROOT_MOUNT
   losetup -d $loopdevice
   kpartx -d $loopdevice
+
+  rm $MOUNT_POINT/etc/systemd/system/multi-user.target.wants/$GROW_SERVER_NAME.service
 
   echo -e "\nBackup done, the file is ${output}"
 }
 
 
-expand_fs() {
-  basic_target=$ROOT_MOUNT/etc/systemd/system/basic.target.wants
-  if [ ! -d $basic_target ]; then
-    mkdir $basic_target
-  fi
-
-  if [ "$model" == "rockpi4" ]; then
-    ln -s $ROOT_MOUNT/lib/systemd/system/resize-helper.service $basic_target/resize-helper.service
-  fi
-
-  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
-    ln -s $ROOT_MOUNT/lib/systemd/system/resize-assistant.service $basic_target/resize-assistant.service
-  fi
-}
-
-
-target_expand() {
-  gdisk ${DEVICE} << EOF
-w
-y
-y
-EOF
-  systemctl enable resize-helper
-}
-
-
-update_uuid() {
-  if [ "$model" == "rockpis" ] || [ "$model" == "rk356x" ]; then
-    old_boot_uuid=$(blkid -o export ${DEVICE}p1 | grep ^UUID)
-    old_root_uuid=$(blkid -o export ${DEVICE}p2 | grep ^UUID)
-    new_boot_uuid=$(blkid -o export ${mapdevice}p1 | grep ^UUID)
-    new_root_uuid=$(blkid -o export ${mapdevice}p2 | grep ^UUID)
-  else
-    old_boot_uuid=$(blkid -o export ${DEVICE}p4 | grep ^UUID)
-    old_root_uuid=$(blkid -o export ${DEVICE}p5 | grep ^UUID)
-    new_boot_uuid=$(blkid -o export ${mapdevice}p4 | grep ^UUID)
-    new_root_uuid=$(blkid -o export ${mapdevice}p5 | grep ^UUID)
-  fi
-
-  sed -i "s/$old_boot_uuid/$new_boot_uuid/g" $ROOT_MOUNT/etc/fstab
-  sed -i "s/$old_root_uuid/$new_root_uuid/g" $ROOT_MOUNT/etc/fstab
-  sed -i "s/${old_root_uuid}/${new_root_uuid}/g" $BOOT_MOUNT/extlinux/extlinux.conf
-
-  if [ -f $BOOT_MOUNT/uEnv.txt ]; then
-    sed -i "s/${old_root_uuid#*=}/${new_root_uuid#*=}/g" $BOOT_MOUNT/uEnv.txt
-  fi
-}
-
-
 usage() {
-  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o path|-e pattern|-m model|-l label|-t target|-u]"
-  echo '    -o specify output position, default is $PWD'
-  echo '    -e exclude files matching pattern for rsync'
-  echo '    -m specify model, rockpi4, rockpis or rk356x, default is rockpi4'
-  echo '    -l specify a volume label for rootfs, default is rootfs'
-  echo '    -t specify target, backup or expand, default is backup'
-  echo '    -u unattended, no need to confirm in the backup process'
+  echo -e "Usage:\n  sudo ./${SCRIPT_NAME} [-o path|-e pattern|-u|-m path]"
+  echo '    -o Specify output position, default is $PWD.'
+  echo '    -e Exclude files matching pattern for rsync.'
+  echo '    -u Unattended, no need to confirm in the backup process.'
+  echo '    -m Back up the root mount point, and support backups from other disks as well.'
 }
 
 
@@ -355,21 +342,16 @@ main() {
   echo -e "  For a description and example usage, see the README.md at:
     https://rock.sh/rockpi-toolbox \n"
   echo '--------------------'
+  install_tools
+  check_part
+  gen_image_file
+  check_avail_space
 
-  if [ "$target" == "expand" ]; then
-    target_expand
-  else
-    install_tools
-    gen_partitions
-    gen_image_file
-    check_avail_space
-
-    printf "The backup file will be saved at %s\n" "$output"
-    printf "After this operation, %s MB of additional disk space will be used.\n" "$backup_size"
-    confirm "Do you want to continue?" "clean" "$output"
-
-    backup_image
-  fi
+  printf "The backup file will be saved at %s\n" "$output"
+  printf "After this operation, %s MB of additional disk space will be used.\n" "$(expr $backup_size / 2048)"
+  confirm "Do you want to continue?" "clean" "$output"
+  create_service
+  backup_image
 }
 
 
