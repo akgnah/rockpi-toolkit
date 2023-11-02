@@ -1,3 +1,6 @@
+> **note**
+> Please visit https://github.com/radxa/backup-sh
+
 # Rockpi-toolkit
 
 Welcome to rockpi-toolkit, the repository will collect tools that can be used on officially supported ubuntu and debian.
